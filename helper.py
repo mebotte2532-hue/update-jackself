@@ -21,24 +21,66 @@ api_id = int(_env("API_ID", "00000"))
 api_hash = _env("API_HASH", "00000")
 bot_token = _env("HELPER_BOT_TOKEN", _env("BOT_TOKEN", "00000"))
 
-# MySQL (Railway auto-sets these with RAILWAY_ prefix)
-from urllib.parse import urlparse
+# MySQL - Try EVERY possible Railway variable name
+from urllib.parse import urlparse as _urlparse
+
+# Debug: print all MySQL-related env vars
+print(f"{Fore.CYAN}{'='*60}")
+print(f"{Fore.CYAN}Helper MySQL Environment Variables Check:")
+for _k in sorted(os.environ.keys()):
+    if any(_needle in _k.upper() for _needle in ["MYSQL", "DB_", "DATABASE", "DBHOST"]):
+        _v = os.environ[_k]
+        _masked = "***" + _v[-4:] if len(_v) > 6 else "***" if _v else "(empty)"
+        print(f"{Fore.CYAN}  {_k} = {_masked}")
+print(f"{Fore.CYAN}{'='*60}{Fore.RESET}")
+
+# Strategy 1: DATABASE_URL
 _db_url = _env("DATABASE_URL", "")
-if _db_url and _db_url.startswith("mysql://"):
-    # Parse mysql://user:pass@host:port/dbname
-    _p = urlparse(_db_url)
-    DBUser = _p.username or "root"
-    DBPass = _p.password or ""
-    DBHost = _p.hostname or "localhost"
-    DBPort = _p.port or 3306
-    DBName = _p.path.lstrip("/") or "selfbot"
-else:
-    # Railway injects these with RAILWAY_ prefix
-    DBHost = _env("RAILWAY_MYSQL_HOST", _env("MYSQLHOST", "localhost"))
-    DBPort = int(_env("RAILWAY_MYSQL_PORT", _env("MYSQLPORT", "3306")))
-    DBName = _env("RAILWAY_MYSQL_DATABASE", _env("MYSQLDATABASE", _env("DB_NAME", "selfbot")))
-    DBUser = _env("RAILWAY_MYSQL_USERNAME", _env("MYSQLUSER", "root"))
-    DBPass = _env("RAILWAY_MYSQL_PASSWORD", _env("MYSQLPASSWORD", ""))
+_parsed = False
+if _db_url:
+    try:
+        if _db_url.startswith("mysql://") or _db_url.startswith("mysql+"):
+            clean_url = _db_url.replace("mysql+pymysql://", "mysql://").replace("mysql+mysqldb://", "mysql://")
+            _p = _urlparse(clean_url)
+            DBHost = _p.hostname or "localhost"
+            DBPort = _p.port or 3306
+            DBName = _p.path.lstrip("/") or ""
+            DBUser = _p.username or "root"
+            DBPass = _p.password or ""
+            if DBName and DBHost != "localhost":
+                _parsed = True
+                print(f"{Fore.GREEN}✓ Helper connected via DATABASE_URL: {DBHost}:{DBPort}/{DBName}{Fore.RESET}")
+    except Exception as _e:
+        print(f"{Fore.YELLOW}Helper DATABASE_URL parse failed: {_e}{Fore.RESET}")
+
+# Strategy 2: Individual MYSQL* vars
+if not _parsed:
+    DBHost = _env("MYSQLHOST", _env("MYSQL_HOST", ""))
+    DBPort = int(_env("MYSQLPORT", _env("MYSQL_PORT", "3306")))
+    DBName = _env("MYSQLDATABASE", _env("MYSQL_DATABASE", ""))
+    DBUser = _env("MYSQLUSER", _env("MYSQL_USERNAME", _env("MYSQL_USER", "root")))
+    DBPass = _env("MYSQLPASSWORD", _env("MYSQL_PASSWORD", ""))
+    if DBHost and DBName and DBHost != "localhost":
+        _parsed = True
+        print(f"{Fore.GREEN}✓ Helper connected via MYSQL* vars: {DBHost}:{DBPort}/{DBName}{Fore.RESET}")
+
+# Strategy 3: RAILWAY_MYSQL_* vars
+if not _parsed:
+    DBHost = _env("RAILWAY_MYSQL_HOST", "")
+    DBPort = int(_env("RAILWAY_MYSQL_PORT", "3306"))
+    DBName = _env("RAILWAY_MYSQL_DATABASE", "")
+    DBUser = _env("RAILWAY_MYSQL_USERNAME", "root")
+    DBPass = _env("RAILWAY_MYSQL_PASSWORD", "")
+    if DBHost and DBName:
+        _parsed = True
+        print(f"{Fore.GREEN}✓ Helper connected via RAILWAY_MYSQL* vars: {DBHost}:{DBPort}/{DBName}{Fore.RESET}")
+
+if not _parsed or DBHost == "localhost":
+    print(f"{Fore.RED}{'='*60}")
+    print(f"{Fore.RED} Helper MySQL NOT configured!")
+    print(f"{Fore.RED}  DBHost = {DBHost}")
+    print(f"{Fore.RED}  DBName = {DBName}")
+    print(f"{Fore.RED}{'='*60}{Fore.RESET}")
 #==========================================#
 
 def get_data(query):
@@ -96,8 +138,8 @@ if api_hash == "00000":
     _helper_errors.append("API_HASH is not set")
 if bot_token == "00000":
     _helper_errors.append("BOT_TOKEN is not set")
-if DBName == "00000":
-    _helper_errors.append("Database name is not set")
+if not _parsed or DBHost == "localhost" or not DBName:
+    _helper_errors.append(f"Helper MySQL not configured! DBHost={DBHost}, DBName={DBName}")
 if _helper_errors:
     print(f"{Fore.RED}{'='*50}")
     print(f"{Fore.RED}Helper Config Errors:")
