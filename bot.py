@@ -91,7 +91,6 @@ if _config_errors:
 app = Client("Bot", api_id=API_ID, api_hash=API_HASH, bot_token=Token)
 
 scheduler = AsyncIOScheduler()
-scheduler.start()
 
 temp_Client = {}
 lock = asyncio.Lock()
@@ -1613,4 +1612,8 @@ async def update(c, m):
         await app.delete_messages(Admin, mess.id)
 
 #================== Run ===================#
-app.start(), print(Fore.YELLOW+"Started..."), idle(), app.stop()
+app.start()
+scheduler.start()
+print(Fore.YELLOW+"Started...")
+idle()
+app.stop()
