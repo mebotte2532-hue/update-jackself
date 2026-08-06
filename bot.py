@@ -18,12 +18,76 @@ import shutil
 import signal
 import re
 import os
-#==================== Config =====================#
+# MySQL Database - Try EVERY possible Railway variable name
 import os as _os
+from urllib.parse import urlparse as _urlparse
 
 def _env(name, default=""):
     """Read config from Railway environment variables with fallback."""
     return _os.environ.get(name, str(default))
+
+# Debug: print all MySQL-related env vars (passwords masked)
+print(f"{Fore.CYAN}{'='*60}")
+print(f"{Fore.CYAN}MySQL Environment Variables Check:")
+for _k in sorted(_os.environ.keys()):
+    if any(_needle in _k.upper() for _needle in ["MYSQL", "DB_", "DATABASE", "DBHOST"]):
+        _v = _os.environ[_k]
+        _masked = "***" + _v[-4:] if len(_v) > 6 else "***" if _v else "(empty)"
+        print(f"{Fore.CYAN}  {_k} = {_masked}")
+print(f"{Fore.CYAN}{'='*60}{Fore.RESET}")
+
+# Strategy 1: DATABASE_URL (Railway provides this)
+_db_url = _env("DATABASE_URL", "")
+_parsed = False
+if _db_url:
+    try:
+        if _db_url.startswith("mysql://") or _db_url.startswith("mysql+"):
+            # Strip mysql+ prefix if present
+            clean_url = _db_url.replace("mysql+pymysql://", "mysql://").replace("mysql+mysqldb://", "mysql://")
+            _p = _urlparse(clean_url)
+            DBHost = _p.hostname or "localhost"
+            DBPort = _p.port or 3306
+            DBName = _p.path.lstrip("/") or ""
+            DBUser = _p.username or "root"
+            DBPass = _p.password or ""
+            if DBName and DBHost != "localhost":
+                _parsed = True
+                print(f"{Fore.GREEN}✓ Connected via DATABASE_URL: {DBHost}:{DBPort}/{DBName}{Fore.RESET}")
+    except Exception as _e:
+        print(f"{Fore.YELLOW}DATABASE_URL parse failed: {_e}{Fore.RESET}")
+
+# Strategy 2: Individual MYSQL* vars (Railway MySQL addon)
+if not _parsed:
+    DBHost = _env("MYSQLHOST", _env("MYSQL_HOST", ""))
+    DBPort = int(_env("MYSQLPORT", _env("MYSQL_PORT", "3306")))
+    DBName = _env("MYSQLDATABASE", _env("MYSQL_DATABASE", ""))
+    DBUser = _env("MYSQLUSER", _env("MYSQL_USERNAME", _env("MYSQL_USER", "root")))
+    DBPass = _env("MYSQLPASSWORD", _env("MYSQL_PASSWORD", ""))
+    if DBHost and DBName and DBHost != "localhost":
+        _parsed = True
+        print(f"{Fore.GREEN}✓ Connected via MYSQL* vars: {DBHost}:{DBPort}/{DBName}{Fore.RESET}")
+
+# Strategy 3: RAILWAY_MYSQL_* vars (newer Railway format)
+if not _parsed:
+    DBHost = _env("RAILWAY_MYSQL_HOST", "")
+    DBPort = int(_env("RAILWAY_MYSQL_PORT", "3306"))
+    DBName = _env("RAILWAY_MYSQL_DATABASE", "")
+    DBUser = _env("RAILWAY_MYSQL_USERNAME", "root")
+    DBPass = _env("RAILWAY_MYSQL_PASSWORD", "")
+    if DBHost and DBName:
+        _parsed = True
+        print(f"{Fore.GREEN}✓ Connected via RAILWAY_MYSQL* vars: {DBHost}:{DBPort}/{DBName}{Fore.RESET}")
+
+# If nothing worked, show clear error with instructions
+if not _parsed or DBHost == "localhost":
+    print(f"{Fore.RED}{'='*60}")
+    print(f"{Fore.RED} MySQL NOT configured correctly!")
+    print(f"{Fore.RED}Current values:")
+    print(f"{Fore.RED}  DBHost = {DBHost}")
+    print(f"{Fore.RED}  DBPort = {DBPort}")
+    print(f"{Fore.RED}  DBName = {DBName}")
+    print(f"{Fore.RED}  DBUser = {DBUser}")
+    print(f"{Fore.RED}{'='*60}{Fore.RESET}")
 
 Admin = int(_env("ADMIN_ID", "00000"))                          # Admin ID
 Token = _env("BOT_TOKEN", "00000")                              # Bot Token
@@ -36,30 +100,11 @@ Helper_ID = _env("HELPER_ID", "00000")                          # Helper Usernam
 CardNumber = _env("CARD_NUMBER", "00000")                       # Card Number
 CardName = _env("CARD_NAME", "00000")                           # Card Name
 
-# MySQL Database (Railway provides these when you add MySQL addon)
-# Priority: DATABASE_URL > individual MYSQL* vars > hardcoded localhost
-_db_url = _env("DATABASE_URL", "")
-if _db_url and _db_url.startswith("mysql://"):
-    # Parse mysql://user:pass@host:port/dbname
-    from urllib.parse import urlparse
-    _p = urlparse(_db_url)
-    DBUser = _p.username or "root"
-    DBPass = _p.password or ""
-    DBHost = _p.hostname or "localhost"
-    DBPort = _p.port or 3306
-    DBName = _p.path.lstrip("/") or "selfbot"
-else:
-    DBHost = _env("MYSQLHOST", "localhost")
-    DBPort = int(_env("MYSQLPORT", "3306"))
-    DBName = _env("MYSQLDATABASE", _env("DB_NAME", "00000"))
-    DBUser = _env("MYSQLUSER", _env("DB_USER", "00000"))
-    DBPass = _env("MYSQLPASSWORD", _env("DB_PASS", "00000"))
-
-HelperDBHost = _env("HELPER_MYSQLHOST", DBHost)
-HelperDBPort = int(_env("HELPER_MYSQLPORT", DBPort))
-HelperDBName = _env("HELPER_DB_NAME", DBName)
-HelperDBUser = _env("HELPER_DB_USER", DBUser)
-HelperDBPass = _env("HELPER_DB_PASS", DBPass)
+HelperDBHost = DBHost
+HelperDBPort = DBPort
+HelperDBName = DBName
+HelperDBUser = DBUser
+HelperDBPass = DBPass
 #==================== Create =====================#
 if not os.path.isdir("sessions"):
     os.mkdir("sessions")
@@ -79,14 +124,16 @@ if API_ID == 0:
     _config_errors.append("API_ID is not set (still 0)")
 if API_HASH == "00000":
     _config_errors.append("API_HASH is not set")
-if DBName == "00000":
-    _config_errors.append("Database name is not set - check MYSQLDATABASE or DB_NAME env var")
+if not _parsed or DBHost == "localhost" or not DBName:
+    _config_errors.append(f"MySQL not configured! DBHost={DBHost}, DBName={DBName}")
+    _config_errors.append("Please set DATABASE_URL in Railway Variables (format: mysql://user:pass@host:port/db)")
 if _config_errors:
     print(f"{Fore.RED}{'='*50}")
     print(f"{Fore.RED}Configuration Errors (set these in Railway Variables):")
     for err in _config_errors:
         print(f"{Fore.RED}  ✗ {err}")
     print(f"{Fore.RED}{'='*50}{Fore.RESET}")
+    # Don't exit - let the MySQL connection error show naturally
 #===================== App =======================#
 app = Client("Bot", api_id=API_ID, api_hash=API_HASH, bot_token=Token)
 
