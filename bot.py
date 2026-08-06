@@ -18,6 +18,7 @@ import shutil
 import signal
 import re
 import os
+import traceback
 # MySQL Database - Try EVERY possible Railway variable name
 import os as _os
 from urllib.parse import urlparse as _urlparse
@@ -25,6 +26,15 @@ from urllib.parse import urlparse as _urlparse
 def _env(name, default=""):
     """Read config from Railway environment variables with fallback."""
     return _os.environ.get(name, str(default))
+
+def _normalize_channel_id(value):
+    """Accept @channel, channel, https://t.me/channel, or numeric channel id."""
+    value = str(value or "").strip()
+    value = value.replace("https://t.me/", "").replace("http://t.me/", "").replace("t.me/", "")
+    value = value.split("?")[0].strip().strip("/")
+    if value.startswith("@"):
+        value = value[1:]
+    return value
 
 # Debug: print all MySQL-related env vars (passwords masked)
 print(f"{Fore.CYAN}{'='*60}")
@@ -93,7 +103,7 @@ Admin = int(_env("ADMIN_ID", "00000"))                          # Admin ID
 Token = _env("BOT_TOKEN", "00000")                              # Bot Token
 API_ID = int(_env("API_ID", "00000"))                           # API ID
 API_HASH = _env("API_HASH", "00000")                            # API HASH
-Channel_ID = _env("CHANNEL_ID", "00000")                        # Channel Username
+Channel_ID = _normalize_channel_id(_env("CHANNEL_ID", "00000"))  # Channel Username / Link / ID
 Helper_ID = _env("HELPER_ID", "00000")                          # Helper Username
 
 # Card info
@@ -228,37 +238,89 @@ def delete_admin(user_id):
     if helper_getdata(f"SELECT * FROM adminlist WHERE id = '{user_id}' LIMIT 1") is not None:
         helper_updata(f"DELETE FROM adminlist WHERE id = '{user_id}' LIMIT 1")
 
+async def _safe_answer_callback(call, text=None, show_alert=False):
+    """Answer callback queries without crashing if Telegram says it was already answered/expired."""
+    try:
+        await call.answer(text=text, show_alert=show_alert)
+    except Exception:
+        pass
+
+async def _safe_send_admin_error(title, exc):
+    """Send a short error report to admin and print full traceback in Railway logs."""
+    tb = traceback.format_exc()
+    print(f"{Fore.RED}[{title}] {exc}{Fore.RESET}")
+    print(tb)
+    try:
+        await app.send_message(Admin, f"⚠️ خطای ربات در بخش {title}:\n```\n{tb[-3500:]}\n```")
+    except Exception:
+        pass
+
 def checker(func):
     @wraps(func)
     async def wrapper(c, m, *args, **kwargs):
+        is_callback = hasattr(m, "data") and hasattr(m, "from_user")
         chat_id = m.chat.id if hasattr(m, "chat") else m.from_user.id
-        bot = get_data("SELECT * FROM bot")
-        block = get_data(f"SELECT * FROM block WHERE id = '{chat_id}' LIMIT 1")
 
+        # Make sure callback users always exist in DB. If the DB was reset after /start,
+        # buttons used to fail silently because user was None.
+        if get_data(f"SELECT * FROM user WHERE id = '{chat_id}' LIMIT 1") is None:
+            update_data(f"INSERT INTO user(id) VALUES({chat_id})")
+
+        bot = get_data("SELECT * FROM bot")
+        if bot is None:
+            update_data("INSERT INTO bot() VALUES()")
+            bot = get_data("SELECT * FROM bot")
+
+        block = get_data(f"SELECT * FROM block WHERE id = '{chat_id}' LIMIT 1")
         if block is not None and chat_id != Admin:
+            if is_callback:
+                await _safe_answer_callback(m, "شما از ربات مسدود شده‌اید", True)
             return
-        
-        try:
-            await app.get_chat_member(Channel_ID, chat_id)
-        except errors.UserNotParticipant:
-            await app.send_message(chat_id, "لطفا برای استفاده از ربات ابتدا در کانال زیر عضو شوید\nبعد از عضویت روی /start کلیک کنید", reply_markup=InlineKeyboardMarkup(
-                [
+
+        # Forced-join check. Admin must never be blocked by this check.
+        # If CHANNEL_ID is wrong or bot is not admin in the channel, do NOT break all buttons;
+        # log the problem and allow the bot to continue.
+        if chat_id != Admin and Channel_ID and Channel_ID != "00000":
+            try:
+                await app.get_chat_member(Channel_ID, chat_id)
+            except errors.UserNotParticipant:
+                if is_callback:
+                    await _safe_answer_callback(m, "ابتدا در کانال عضو شوید و سپس /start را بزنید", True)
+                await app.send_message(chat_id, "لطفا برای استفاده از ربات ابتدا در کانال زیر عضو شوید\nبعد از عضویت روی /start کلیک کنید", reply_markup=InlineKeyboardMarkup(
                     [
-                        InlineKeyboardButton(text="عضویت در کانال", url=f"https://t.me/{Channel_ID}")
+                        [
+                            InlineKeyboardButton(text="عضویت در کانال", url=f"https://t.me/{Channel_ID}")
+                        ]
                     ]
-                ]
-            ))
-            return
-        except errors.ChatAdminRequired:
-            if chat_id == Admin:
-                await app.send_message(Admin, "ربات برای فعال شدن جوین اجباری در کانال مورد نظر ادمین نمی باشد!\nلطفا ربات را با دسترسی های لازم در کانال مورد نظر ادمین کنید")
-            return
+                ))
+                return
+            except Exception as e:
+                print(f"{Fore.YELLOW}[JoinCheck Warning] CHANNEL_ID={Channel_ID} -> {type(e).__name__}: {e}{Fore.RESET}")
 
         if bot["status"] == "OFF" and chat_id != Admin:
-            await app.send_message(chat_id, "ربات در حال حاضر خاموش است!")
+            if is_callback:
+                await _safe_answer_callback(m, "ربات در حال حاضر خاموش است!", True)
+            else:
+                await app.send_message(chat_id, "ربات در حال حاضر خاموش است!")
             return
-        
-        return await func(c, m, *args, **kwargs)
+
+        try:
+            return await func(c, m, *args, **kwargs)
+        except errors.MessageNotModified:
+            # User clicked a button that would show the same text again; not a real error.
+            if is_callback:
+                await _safe_answer_callback(m)
+            return
+        except Exception as e:
+            if is_callback:
+                await _safe_answer_callback(m, "خطایی رخ داد؛ گزارش برای مدیر ارسال شد", True)
+            else:
+                try:
+                    await app.send_message(chat_id, "خطایی رخ داد؛ گزارش برای مدیر ارسال شد")
+                except Exception:
+                    pass
+            await _safe_send_admin_error("handler/button", e)
+            return
     return wrapper
 
 async def expirdec(user_id):
@@ -342,13 +404,17 @@ async def update(c, m):
 async def call(c, call):
     global temp_Client
     user = get_data(f"SELECT * FROM user WHERE id = '{call.from_user.id}' LIMIT 1")
+    if user is None:
+        update_data(f"INSERT INTO user(id) VALUES({call.from_user.id})")
+        user = get_data(f"SELECT * FROM user WHERE id = '{call.from_user.id}' LIMIT 1")
     phone_number = user["phone"]
     account_status = "تایید شده" if user["account"] == "verified" else "تایید نشده"
-    expir = user["expir"]
-    amount = user["amount"]
+    expir = user["expir"] or 0
+    amount = user["amount"] or 0
     chat_id = call.from_user.id
     m_id = call.message.id
     data = call.data
+    print(f"{Fore.CYAN}[Callback] user={chat_id} data={data}{Fore.RESET}")
     username = f"@{call.from_user.username}" if call.from_user.username else "وجود ندارد"
 
     if data == "MyAccount":
@@ -818,6 +884,9 @@ async def call(c, call):
     
     elif data == "text":
         await app.answer_callback_query(call.id, text="این دکمه نمایشی است", show_alert=True)
+
+    # Stop Telegram's loading spinner for all buttons that edited/sent a message but did not answer explicitly.
+    await _safe_answer_callback(call)
 
 @app.on_message(filters.contact)
 @checker
@@ -1296,10 +1365,11 @@ async def update(c, m):
         if Admin in temp_Client:
             del temp_Client[Admin]
 
-@app.on_callback_query(filters.user(Admin), group=-1)
+@app.on_callback_query(filters.user(Admin) & filters.regex(r"^(Panel|AdminBack|DeleteSub-\d+|AcceptDelSub-\d+)$"), group=-1)
 async def call(c, call):
     data = call.data
     m_id = call.message.id
+    print(f"{Fore.CYAN}[Admin Callback] user={call.from_user.id} data={data}{Fore.RESET}")
     if data == "Panel":
         await app.send_message(Admin, "مدیر گرامی به پنل مدیریت Ultra Self خوش آمدید!", reply_markup=Panel)
         update_data(f"UPDATE user SET step = 'none' WHERE id = '{Admin}' LIMIT 1")
@@ -1350,6 +1420,8 @@ async def call(c, call):
         async with lock:
             if Admin in temp_Client:
                 del temp_Client[Admin]
+
+    await _safe_answer_callback(call)
 
 @app.on_message(filters.private&filters.user(Admin), group=1)
 async def update(c, m):
