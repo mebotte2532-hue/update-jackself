@@ -21,10 +21,11 @@ api_id = int(_env("API_ID", "00000"))
 api_hash = _env("API_HASH", "00000")
 bot_token = _env("HELPER_BOT_TOKEN", _env("BOT_TOKEN", "00000"))
 
-# MySQL (same as bot.py - Railway auto-sets MYSQL* vars)
+# MySQL (Railway auto-sets these with RAILWAY_ prefix)
 from urllib.parse import urlparse
 _db_url = _env("DATABASE_URL", "")
 if _db_url and _db_url.startswith("mysql://"):
+    # Parse mysql://user:pass@host:port/dbname
     _p = urlparse(_db_url)
     DBUser = _p.username or "root"
     DBPass = _p.password or ""
@@ -32,11 +33,12 @@ if _db_url and _db_url.startswith("mysql://"):
     DBPort = _p.port or 3306
     DBName = _p.path.lstrip("/") or "selfbot"
 else:
-    DBHost = _env("MYSQLHOST", "localhost")
-    DBPort = int(_env("MYSQLPORT", "3306"))
-    DBName = _env("MYSQLDATABASE", _env("DB_NAME", "00000"))
-    DBUser = _env("MYSQLUSER", _env("DB_USER", "00000"))
-    DBPass = _env("MYSQLPASSWORD", _env("DB_PASS", "00000"))
+    # Railway injects these with RAILWAY_ prefix
+    DBHost = _env("RAILWAY_MYSQL_HOST", _env("MYSQLHOST", "localhost"))
+    DBPort = int(_env("RAILWAY_MYSQL_PORT", _env("MYSQLPORT", "3306")))
+    DBName = _env("RAILWAY_MYSQL_DATABASE", _env("MYSQLDATABASE", _env("DB_NAME", "selfbot")))
+    DBUser = _env("RAILWAY_MYSQL_USERNAME", _env("MYSQLUSER", "root"))
+    DBPass = _env("RAILWAY_MYSQL_PASSWORD", _env("MYSQLPASSWORD", ""))
 #==========================================#
 
 def get_data(query):
