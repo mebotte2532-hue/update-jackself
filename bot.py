@@ -1,8 +1,8 @@
 #=============== In The Name Of God ===============#
-# Source Name: Ultra Self Creator
+# Source Name: TiTaN Self Creator
 # Source Version: 1.4.3
-# Developer: @IVGalaxy
-# © 2024 Ultra Self LLC. All rights reserved.
+# Developer: Mr Rashidi - @code_watch
+# © 2024 TiTaN Self LLC. All rights reserved.
 #==================== Import ======================#
 from colorama import Fore
 from pyrogram import Client, filters, idle, errors
@@ -19,7 +19,6 @@ import signal
 import re
 import os
 import traceback
-# MySQL Database - Try EVERY possible Railway variable name
 import os as _os
 from urllib.parse import urlparse as _urlparse
 
