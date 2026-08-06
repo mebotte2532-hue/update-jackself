@@ -1,8 +1,8 @@
 #=============== In The Name Of God ===============#
-# Source Name: TiTaN Self Creator
+# Source Name: Ultra Self Creator
 # Source Version: 1.4.3
-# Developer: Mr Rashidi - @code_watch
-# © 2024 TiTaN Self LLC. All rights reserved.
+# Developer: @IVGalaxy
+# © 2024 Ultra Self LLC. All rights reserved.
 #==================== Import ======================#
 from colorama import Fore
 from pyrogram import Client, filters, idle, errors
@@ -19,6 +19,7 @@ import signal
 import re
 import os
 import traceback
+# MySQL Database - Try EVERY possible Railway variable name
 import os as _os
 from urllib.parse import urlparse as _urlparse
 
@@ -171,6 +172,33 @@ def update_data(query):
         db.execute(query)
         connect.commit()
 
+def ensure_column(table_name, column_name, column_definition):
+    """Add missing columns to old Railway tables without deleting any data."""
+    rows = get_datas(f"SHOW COLUMNS FROM `{table_name}` LIKE '{column_name}'")
+    if not rows:
+        print(f"{Fore.YELLOW}[DB Migration] Adding missing column `{column_name}` to `{table_name}`...{Fore.RESET}")
+        update_data(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {column_definition}")
+
+def ensure_user(chat_id):
+    """Create/fix a user row and always return all keys used by the bot."""
+    user = get_data(f"SELECT * FROM user WHERE id = '{chat_id}' LIMIT 1")
+    if user is None:
+        update_data(f"INSERT INTO user(id) VALUES({chat_id})")
+        user = get_data(f"SELECT * FROM user WHERE id = '{chat_id}' LIMIT 1")
+    defaults = {
+        "step": "none",
+        "phone": None,
+        "amount": 0,
+        "expir": 0,
+        "account": "unverified",
+        "self": "inactive",
+        "pid": None,
+    }
+    for key, value in defaults.items():
+        if key not in user:
+            user[key] = value
+    return user
+
 def helper_getdata(query):
     with pymysql.connect(host=HelperDBHost, port=HelperDBPort, database=HelperDBName, user=HelperDBUser, password=HelperDBPass) as connect:
         db = connect.cursor()
@@ -216,6 +244,28 @@ CREATE TABLE IF NOT EXISTS adminlist(
 id bigint PRIMARY KEY
 ) default charset=utf8mb4;
 """)
+
+#================== DB Migration ==================#
+# Very important on Railway: helper.py may create a small `user` table first
+# with only id/step. CREATE TABLE IF NOT EXISTS will NOT add missing columns.
+# So we safely add every column that bot.py needs, without deleting data.
+ensure_column("bot", "status", "varchar(10) DEFAULT 'ON'")
+ensure_column("user", "step", "varchar(150) DEFAULT 'none'")
+ensure_column("user", "phone", "varchar(150) DEFAULT NULL")
+ensure_column("user", "amount", "bigint DEFAULT '0'")
+ensure_column("user", "expir", "bigint DEFAULT '0'")
+ensure_column("user", "account", "varchar(50) DEFAULT 'unverified'")
+ensure_column("user", "self", "varchar(50) DEFAULT 'inactive'")
+ensure_column("user", "pid", "bigint DEFAULT NULL")
+
+# Fill NULL values in old rows so buttons can read them safely.
+update_data("UPDATE `bot` SET status = 'ON' WHERE status IS NULL")
+update_data("UPDATE `user` SET step = 'none' WHERE step IS NULL")
+update_data("UPDATE `user` SET amount = 0 WHERE amount IS NULL")
+update_data("UPDATE `user` SET expir = 0 WHERE expir IS NULL")
+update_data("UPDATE `user` SET account = 'unverified' WHERE account IS NULL")
+update_data("UPDATE `user` SET self = 'inactive' WHERE self IS NULL")
+print(f"{Fore.GREEN}✓ Database schema checked/migrated successfully{Fore.RESET}")
 
 bot = get_data("SELECT * FROM bot")
 if bot is None:
@@ -383,9 +433,7 @@ Main = InlineKeyboardMarkup(
 
 @app.on_message(filters.private, group=-1)
 async def update(c, m):
-    user = get_data(f"SELECT * FROM user WHERE id = '{m.chat.id}' LIMIT 1")
-    if user is None:
-        update_data(f"INSERT INTO user(id) VALUES({m.chat.id})")
+    ensure_user(m.chat.id)
 
 @app.on_message(filters.private&filters.command("start"))
 @checker
@@ -402,10 +450,7 @@ async def update(c, m):
 @checker
 async def call(c, call):
     global temp_Client
-    user = get_data(f"SELECT * FROM user WHERE id = '{call.from_user.id}' LIMIT 1")
-    if user is None:
-        update_data(f"INSERT INTO user(id) VALUES({call.from_user.id})")
-        user = get_data(f"SELECT * FROM user WHERE id = '{call.from_user.id}' LIMIT 1")
+    user = ensure_user(call.from_user.id)
     phone_number = user["phone"]
     account_status = "تایید شده" if user["account"] == "verified" else "تایید نشده"
     expir = user["expir"] or 0
@@ -890,7 +935,7 @@ async def call(c, call):
 @app.on_message(filters.contact)
 @checker
 async def update(c, m):
-    user = get_data(f"SELECT * FROM user WHERE id = '{m.chat.id}' LIMIT 1")
+    user = ensure_user(m.chat.id)
     if user["step"] == "contact":
         phone_number = str(m.contact.phone_number)
         if not phone_number.startswith("+"):
@@ -910,7 +955,7 @@ async def update(c, m):
 @checker
 async def update(c, m):
     global temp_Client
-    user = get_data(f"SELECT * FROM user WHERE id = '{m.chat.id}' LIMIT 1")
+    user = ensure_user(m.chat.id)
     username = f"@{m.from_user.username}" if m.from_user.username else "وجود ندارد"
     phone_number = user["phone"]
     expir = user["expir"]
@@ -1425,7 +1470,7 @@ async def call(c, call):
 @app.on_message(filters.private&filters.user(Admin), group=1)
 async def update(c, m):
     bot = get_data("SELECT * FROM bot")
-    user = get_data(f"SELECT * FROM user WHERE id = '{Admin}' LIMIT 1")
+    user = ensure_user(Admin)
     text = m.text
     m_id = m.id
 
