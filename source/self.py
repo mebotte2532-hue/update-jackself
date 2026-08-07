@@ -109,7 +109,7 @@ import pickle
 from pyrogram.errors.exceptions.bad_request_400 import ChatNotModified
 from pyrogram.types import ChatPermissions, Message
 
-FIX_VERSION = "2026-08-07-floodwait-safe-v6"
+FIX_VERSION = "2026-08-07-self-startup-deepfix-v8"
 print(Fore.GREEN + f"Ultra Self self.py fix version: {FIX_VERSION}" + Fore.RESET)
 
 admin = sys.argv[1]
@@ -127,7 +127,18 @@ love = []
 fal = []
 mutey = []
 tabchitimer = []
-imdb = IMDb()
+imdb = None
+
+def get_imdb_client():
+    """Create IMDb client lazily so a broken/changed IMDbPY package never crashes self startup."""
+    global imdb
+    if imdb is None:
+        try:
+            imdb = IMDb()
+        except Exception as e:
+            raise RuntimeError(f"IMDb feature is temporarily unavailable: {e}")
+    return imdb
+
 mov_titles = [
     "long imdb title",
     "long imdb canonical title",
@@ -5030,9 +5041,10 @@ def imdb_query(client, message):  # sourcery no-metrics
     catmessage =  message.edit("❅__**Wait**__")
     try:
         movie_name = message.text.split("/imdb")[1]
-        movies = imdb.search_movie(movie_name)
+        imdb_client = get_imdb_client()
+        movies = imdb_client.search_movie(movie_name)
         movieid = movies[0].movieID
-        movie = imdb.get_movie(movieid)
+        movie = imdb_client.get_movie(movieid)
         moviekeys = list(movie.keys())
         for i in mov_titles:
             if i in moviekeys:
@@ -8566,7 +8578,12 @@ try:
  app.start()
  scheduler.start()
  print(Fore.YELLOW + "started")
- app.send_message("me", f"**Hello Self is Running\n© 2024 Ultra Self LLC. All rights reserved.**")
+ try:
+  app.send_message("me", f"**Hello Self is Running\n© 2024 Ultra Self LLC. All rights reserved.**")
+ except Exception as e:
+  print(Fore.YELLOW + f"[Self Warning] Started but could not send startup message: {e}" + Fore.RESET)
+ with open("ready.flag", "w") as ready_file:
+  ready_file.write("ready")
  idle()
 finally:
  try:
