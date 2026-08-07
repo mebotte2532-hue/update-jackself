@@ -19,7 +19,7 @@ import signal
 import re
 import os
 import traceback
-FIX_VERSION = "2026-08-07-self-runtime-v4"
+FIX_VERSION = "2026-08-07-self-source-fallback-v5"
 print(f"{Fore.GREEN}Ultra Self worker fix version: {FIX_VERSION}{Fore.RESET}")
 
 # MySQL Database - Try EVERY possible Railway variable name
@@ -201,6 +201,69 @@ def ensure_user(chat_id):
         if key not in user:
             user[key] = value
     return user
+
+def _short_dir_listing(path):
+    try:
+        return ", ".join(sorted(os.listdir(path))[:30])
+    except Exception as e:
+        return f"<cannot list {path}: {e}>"
+
+def prepare_self_directory(user_id):
+    """Prepare selfs/self-{user_id} from source/Self.zip or from source/ files.
+
+    Railway sometimes deploys without the binary Self.zip if it was not uploaded correctly.
+    In that case, fall back to copying the source/ directory directly.
+    """
+    target = os.path.join("selfs", f"self-{user_id}")
+    if os.path.isdir(target):
+        shutil.rmtree(target, ignore_errors=True)
+    os.makedirs(target, exist_ok=True)
+
+    candidates = [
+        os.path.join(os.getcwd(), "source", "Self.zip"),
+        os.path.join("source", "Self.zip"),
+        os.path.join(os.getcwd(), "Self.zip"),
+        "Self.zip",
+    ]
+    zip_path = next((p for p in candidates if os.path.isfile(p)), None)
+    if zip_path:
+        print(f"{Fore.GREEN}[Self Prepare] Extracting {zip_path} -> {target}{Fore.RESET}")
+        with zipfile.ZipFile(zip_path, "r") as extract:
+            extract.extractall(target)
+    else:
+        source_dir = os.path.join(os.getcwd(), "source")
+        if os.path.isfile(os.path.join(source_dir, "self.py")):
+            print(f"{Fore.YELLOW}[Self Prepare] source/Self.zip not found; copying source directory -> {target}{Fore.RESET}")
+            shutil.copytree(
+                source_dir,
+                target,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("Self.zip", "__pycache__", "*.pyc")
+            )
+        else:
+            raise FileNotFoundError(
+                "Self source not found. Expected source/Self.zip or source/self.py. "
+                f"cwd={os.getcwd()} | root files=[{_short_dir_listing(os.getcwd())}] | "
+                f"source files=[{_short_dir_listing(source_dir)}]"
+            )
+
+    if not os.path.isfile(os.path.join(target, "self.py")):
+        raise FileNotFoundError(
+            f"self.py was not found after preparing self directory. target={target} | "
+            f"target files=[{_short_dir_listing(target)}]"
+        )
+    return target
+
+async def cleanup_login_client(chat_id):
+    """Safely disconnect and remove temporary login client without hiding the original error."""
+    async with lock:
+        client = temp_Client.get(chat_id, {}).get("client")
+        if client:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        temp_Client.pop(chat_id, None)
 
 def helper_getdata(query):
     with pymysql.connect(host=HelperDBHost, port=HelperDBPort, database=HelperDBName, user=HelperDBUser, password=HelperDBPass) as connect:
@@ -982,16 +1045,11 @@ async def update(c, m):
                         del temp_Client[chat_id]
                 mess = await app.edit_message_text(chat_id, mess.id, "لاگین با موفقیت انجام شد")
                 mess = await app.edit_message_text(chat_id, mess.id, "در حال فعالسازی سلف...\n(ممکن است چند لحظه طول بکشد)")
-                # Always extract a fresh self source. If a previous activation failed,
-                # the old broken self.py may still exist in selfs/self-{id}.
-                if os.path.isdir(f"selfs/self-{m.chat.id}"):
-                    shutil.rmtree(f"selfs/self-{m.chat.id}", ignore_errors=True)
-                os.mkdir(f"selfs/self-{m.chat.id}")
-                with zipfile.ZipFile("source/Self.zip", "r") as extract:
-                    extract.extractall(f"selfs/self-{m.chat.id}")
-                error_log_path = f"selfs/self-{m.chat.id}/error.log"
+                # Always prepare a fresh self source. Supports both source/Self.zip and source/self.py fallback.
+                self_dir = prepare_self_directory(m.chat.id)
+                error_log_path = os.path.join(self_dir, "error.log")
                 with open(error_log_path, "w") as error_log_file:
-                    process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(m.chat.id), str(API_ID), API_HASH, Helper_ID], cwd=f"selfs/self-{m.chat.id}", stdout=error_log_file, stderr=subprocess.STDOUT)
+                    process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(m.chat.id), str(API_ID), API_HASH, Helper_ID], cwd=self_dir, stdout=error_log_file, stderr=subprocess.STDOUT)
                 await asyncio.sleep(10)
                 if process.poll() is None:
                     if os.path.isfile(error_log_path):
@@ -1054,20 +1112,18 @@ async def update(c, m):
                     ]
                 ))
                 update_data(f"UPDATE user SET step = 'none' WHERE id = '{m.chat.id}' LIMIT 1")
-                async with lock:
-                    await temp_Client[chat_id]["client"].disconnect()
-                    if chat_id in temp_Client:
-                        del temp_Client[chat_id]
+                await cleanup_login_client(chat_id)
                 if os.path.isfile(f"sessions/{chat_id}.session"):
                     os.remove(f"sessions/{chat_id}.session")
             
             except Exception:
-                async with lock:
-                    await temp_Client[chat_id]["client"].disconnect()
-                    if chat_id in temp_Client:
-                        del temp_Client[chat_id]
+                update_data(f"UPDATE user SET step = 'none' WHERE id = '{m.chat.id}' LIMIT 1")
+                await cleanup_login_client(chat_id)
                 if os.path.isfile(f"sessions/{chat_id}.session"):
                     os.remove(f"sessions/{chat_id}.session")
+                if os.path.isdir(f"selfs/self-{chat_id}"):
+                    shutil.rmtree(f"selfs/self-{chat_id}", ignore_errors=True)
+                raise
         else:
             await app.send_message(chat_id, "فرمت نامعتبر است! لطفا کد را با فرمت ذکر شده وارد کنید:")
     
@@ -1085,16 +1141,11 @@ async def update(c, m):
                     del temp_Client[chat_id]
             mess = await app.edit_message_text(chat_id, mess.id, "لاگین با موفقیت انجام شد")
             mess = await app.edit_message_text(chat_id, mess.id, "در حال فعالسازی سلف...\n(ممکن است چند لحظه طول بکشد)")
-            # Always extract a fresh self source. If a previous activation failed,
-            # the old broken self.py may still exist in selfs/self-{id}.
-            if os.path.isdir(f"selfs/self-{m.chat.id}"):
-                shutil.rmtree(f"selfs/self-{m.chat.id}", ignore_errors=True)
-            os.mkdir(f"selfs/self-{m.chat.id}")
-            with zipfile.ZipFile("source/Self.zip", "r") as extract:
-                extract.extractall(f"selfs/self-{m.chat.id}")
-            error_log_path = f"selfs/self-{m.chat.id}/error.log"
+            # Always prepare a fresh self source. Supports both source/Self.zip and source/self.py fallback.
+            self_dir = prepare_self_directory(m.chat.id)
+            error_log_path = os.path.join(self_dir, "error.log")
             with open(error_log_path, "w") as error_log_file:
-                process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(m.chat.id), str(API_ID), API_HASH, Helper_ID], cwd=f"selfs/self-{m.chat.id}", stdout=error_log_file, stderr=subprocess.STDOUT)
+                process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(m.chat.id), str(API_ID), API_HASH, Helper_ID], cwd=self_dir, stdout=error_log_file, stderr=subprocess.STDOUT)
             await asyncio.sleep(10)
             if process.poll() is None:
                 if os.path.isfile(error_log_path):
@@ -1144,12 +1195,13 @@ async def update(c, m):
             ))
 
         except Exception:
-            async with lock:
-                await temp_Client[chat_id]["client"].disconnect()
-                if chat_id in temp_Client:
-                    del temp_Client[chat_id]
+            update_data(f"UPDATE user SET step = 'none' WHERE id = '{m.chat.id}' LIMIT 1")
+            await cleanup_login_client(chat_id)
             if os.path.isfile(f"sessions/{chat_id}.session"):
                 os.remove(f"sessions/{chat_id}.session")
+            if os.path.isdir(f"selfs/self-{chat_id}"):
+                shutil.rmtree(f"selfs/self-{chat_id}", ignore_errors=True)
+            raise
 
     elif user["step"] == "buyamount1":
         if text.isdigit():
@@ -1699,15 +1751,11 @@ async def update(c, m):
                     user_data = get_data(f"SELECT * FROM user WHERE id = '{user_id}' LIMIT 1")
                     if user_data["self"] != "active":
                         mess = await app.send_message(Admin, "در حال پردازش...\n(ممکن است چند لحظه طول بکشد)")
-                        # Use fresh self.py from source/Self.zip for manual activation too.
-                        if os.path.isdir(f"selfs/self-{user_id}"):
-                            shutil.rmtree(f"selfs/self-{user_id}", ignore_errors=True)
-                        os.mkdir(f"selfs/self-{user_id}")
-                        with zipfile.ZipFile("source/Self.zip", "r") as extract:
-                            extract.extractall(f"selfs/self-{user_id}")
-                        error_log_path = f"selfs/self-{user_id}/error.log"
+                        # Use fresh self.py for manual activation too.
+                        self_dir = prepare_self_directory(user_id)
+                        error_log_path = os.path.join(self_dir, "error.log")
                         with open(error_log_path, "w") as error_log_file:
-                            process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(user_id), str(API_ID), API_HASH, Helper_ID], cwd=f"selfs/self-{user_id}", stdout=error_log_file, stderr=subprocess.STDOUT)
+                            process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(user_id), str(API_ID), API_HASH, Helper_ID], cwd=self_dir, stdout=error_log_file, stderr=subprocess.STDOUT)
                         await asyncio.sleep(10)
                         if process.poll() is None:
                             if os.path.isfile(error_log_path):
