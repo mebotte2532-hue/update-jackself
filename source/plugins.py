@@ -141,10 +141,10 @@ def download_song(name):
     if response.status_code == 200:
         with open(f"{name}.mp3", 'wb') as file:
             file.write(response.content)
-# مثال استفاده از تابع
-song_name = "یاس"
-
-download_song(song_name)
+# Do NOT download anything at import/startup.
+# The old source called download_song("یاس") here, which could crash the whole self
+# when the external music API was down. Downloading must happen only when a user
+# explicitly runs the related command.
    
 def DLX(Url):
     data = {'videoid': Url}
