@@ -13,7 +13,7 @@ import json
 import sys
 import os
 import asyncio
-FIX_VERSION = "2026-08-07-floodwait-safe-v6"
+FIX_VERSION = "2026-08-07-self-startup-deepfix-v8"
 print(f"{Fore.GREEN}Ultra Self helper fix version: {FIX_VERSION}{Fore.RESET}")
 
 #================= Config =================#
