@@ -19,7 +19,7 @@ import signal
 import re
 import os
 import traceback
-FIX_VERSION = "2026-08-07-floodwait-safe-v6"
+FIX_VERSION = "2026-08-07-self-startup-deepfix-v8"
 print(f"{Fore.GREEN}Ultra Self worker fix version: {FIX_VERSION}{Fore.RESET}")
 
 # MySQL Database - Try EVERY possible Railway variable name
@@ -264,6 +264,27 @@ async def cleanup_login_client(chat_id):
             except Exception:
                 pass
         temp_Client.pop(chat_id, None)
+
+async def wait_for_self_ready(process, self_dir, timeout=None):
+    """Wait until self.py confirms it really started.
+
+    Checking only `process.poll() is None` is not enough: a process can be alive
+    but stuck before Pyrogram starts. self.py creates ready.flag after app.start().
+    """
+    timeout = int(_env("SELF_START_TIMEOUT", "35") if timeout is None else timeout)
+    ready_file = os.path.join(self_dir, "ready.flag")
+    for _ in range(timeout):
+        if os.path.isfile(ready_file) and process.poll() is None:
+            return True
+        if process.poll() is not None:
+            return False
+        await asyncio.sleep(1)
+    if process.poll() is None:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+    return False
 
 def helper_getdata(query):
     with pymysql.connect(host=HelperDBHost, port=HelperDBPort, database=HelperDBName, user=HelperDBUser, password=HelperDBPass) as connect:
@@ -1050,8 +1071,7 @@ async def update(c, m):
                 error_log_path = os.path.join(self_dir, "error.log")
                 with open(error_log_path, "w") as error_log_file:
                     process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(m.chat.id), str(API_ID), API_HASH, Helper_ID], cwd=self_dir, stdout=error_log_file, stderr=subprocess.STDOUT)
-                await asyncio.sleep(10)
-                if process.poll() is None:
+                if await wait_for_self_ready(process, self_dir):
                     if os.path.isfile(error_log_path):
                         os.remove(error_log_path)
                     await app.edit_message_text(chat_id, mess.id, f"سلف با موفقیت برای اکانت شما فعال شد\nمدت زمان اشتراک: {expir_count} روز", reply_markup=InlineKeyboardMarkup(
@@ -1075,6 +1095,8 @@ async def update(c, m):
                     if os.path.isfile(error_log_path):
                         with open(error_log_path, "r", encoding="utf-8", errors="ignore") as ef:
                             error_output = ef.read()
+                    if not error_output.strip():
+                        error_output = "self.py did not create ready.flag before timeout. The process exited or was not fully started. Check Railway logs and source files."
                     await app.send_message(Admin, f"⚠️ خطا در فعالسازی سلف کاربر `{m.chat.id}`:\n```\n{error_output[:3500]}\n```")
                     await app.edit_message_text(chat_id, mess.id, "در فعالسازی سلف برای اکانت شما مشکلی رخ داد! هیچ مبلغی از حساب شما کسر نشد\nلطفا دوباره امتحان کنید و در صورتی که مشکل ادامه داشت با پشتیبانی تماس بگیرید", reply_markup=InlineKeyboardMarkup(
                         [
@@ -1146,8 +1168,7 @@ async def update(c, m):
             error_log_path = os.path.join(self_dir, "error.log")
             with open(error_log_path, "w") as error_log_file:
                 process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(m.chat.id), str(API_ID), API_HASH, Helper_ID], cwd=self_dir, stdout=error_log_file, stderr=subprocess.STDOUT)
-            await asyncio.sleep(10)
-            if process.poll() is None:
+            if await wait_for_self_ready(process, self_dir):
                 if os.path.isfile(error_log_path):
                     os.remove(error_log_path)
                 await app.edit_message_text(chat_id, mess.id, f"سلف با موفقیت برای اکانت شما فعال شد\nمدت زمان اشتراک: {expir_count} روز", reply_markup=InlineKeyboardMarkup(
@@ -1171,6 +1192,8 @@ async def update(c, m):
                 if os.path.isfile(error_log_path):
                     with open(error_log_path, "r", encoding="utf-8", errors="ignore") as ef:
                         error_output = ef.read()
+                if not error_output.strip():
+                    error_output = "self.py did not create ready.flag before timeout. The process exited or was not fully started. Check Railway logs and source files."
                 await app.send_message(Admin, f"⚠️ خطا در فعالسازی سلف کاربر `{m.chat.id}`:\n```\n{error_output[:3500]}\n```")
                 await app.edit_message_text(chat_id, mess.id, "در فعالسازی سلف برای اکانت شما مشکلی رخ داد! هیچ مبلغی از حساب شما کسر نشد\nلطفا دوباره امتحان کنید و در صورتی که مشکل ادامه داشت با پشتیبانی تماس بگیرید", reply_markup=InlineKeyboardMarkup(
                     [
@@ -1756,8 +1779,7 @@ async def update(c, m):
                         error_log_path = os.path.join(self_dir, "error.log")
                         with open(error_log_path, "w") as error_log_file:
                             process = subprocess.Popen(["python3", "-u", "-W", "ignore::SyntaxWarning", "self.py", str(user_id), str(API_ID), API_HASH, Helper_ID], cwd=self_dir, stdout=error_log_file, stderr=subprocess.STDOUT)
-                        await asyncio.sleep(10)
-                        if process.poll() is None:
+                        if await wait_for_self_ready(process, self_dir):
                             if os.path.isfile(error_log_path):
                                 os.remove(error_log_path)
                             await app.edit_message_text(Admin, mess.id, "سلف با موفقیت برای این کاربر فعال شد")
@@ -1771,6 +1793,8 @@ async def update(c, m):
                             if os.path.isfile(error_log_path):
                                 with open(error_log_path, "r", encoding="utf-8", errors="ignore") as ef:
                                     error_output = ef.read()
+                            if not error_output.strip():
+                                error_output = "self.py did not create ready.flag before timeout. The process exited or was not fully started. Check Railway logs and source files."
                             await app.edit_message_text(Admin, mess.id, f"در فعالسازی سلف برای این کاربر مشکلی پیش آمد!\n```\n{error_output[:3500]}\n```")
                     else:
                         await app.send_message(Admin, "سلف از قبل برای این کاربر فعال است!")
