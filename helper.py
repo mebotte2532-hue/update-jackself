@@ -12,7 +12,8 @@ import pymysql
 import json
 import sys
 import os
-FIX_VERSION = "2026-08-07-db-schema-v3"
+import asyncio
+FIX_VERSION = "2026-08-07-floodwait-safe-v6"
 print(f"{Fore.GREEN}Ultra Self helper fix version: {FIX_VERSION}{Fore.RESET}")
 
 #================= Config =================#
@@ -3220,4 +3221,40 @@ async def updates(app, m:Message):
                await app.send_message(m.chat.id, f"**Owner List is Empty**")
           update_data(f"UPDATE user SET step = 'none' WHERE id = '{m.chat.id}' LIMIT 1")
 
-app.start(), print(Fore.YELLOW+"Started..."), idle(), app.stop()
+#================== Run ===================#
+def _flood_wait_seconds(exc):
+     value = getattr(exc, "value", None) or getattr(exc, "x", None)
+     if value is None:
+          import re
+          match = re.search(r"wait of (\d+) seconds", str(exc))
+          value = int(match.group(1)) if match else 60
+     return max(1, int(value))
+
+async def start_client_safely(client, label):
+     while True:
+          try:
+               await client.start()
+               return
+          except errors.FloodWait as e:
+               wait_time = _flood_wait_seconds(e) + 5
+               print(f"{Fore.RED}[{label}] Telegram FLOOD_WAIT: sleeping {wait_time} seconds instead of crashing Railway...{Fore.RESET}")
+               await asyncio.sleep(wait_time)
+          except Exception:
+               print(f"{Fore.RED}[{label}] Startup failed with non-FloodWait error:{Fore.RESET}")
+               import traceback
+               print(traceback.format_exc())
+               raise
+
+async def main():
+     await start_client_safely(app, "helper")
+     print(Fore.YELLOW + "Started...")
+     try:
+          await idle()
+     finally:
+          try:
+               await app.stop()
+          except Exception:
+               pass
+
+if __name__ == "__main__":
+     app.run(main())
