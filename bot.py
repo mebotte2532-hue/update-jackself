@@ -19,7 +19,7 @@ import signal
 import re
 import os
 import traceback
-FIX_VERSION = "2026-08-07-self-source-fallback-v5"
+FIX_VERSION = "2026-08-07-floodwait-safe-v6"
 print(f"{Fore.GREEN}Ultra Self worker fix version: {FIX_VERSION}{Fore.RESET}")
 
 # MySQL Database - Try EVERY possible Railway variable name
@@ -1842,13 +1842,49 @@ async def update(c, m):
         await app.delete_messages(Admin, mess.id)
 
 #================== Run ===================#
+def _flood_wait_seconds(exc):
+    """Pyrogram FloodWait exposes seconds as .value in v2; keep fallbacks for safety."""
+    value = getattr(exc, "value", None) or getattr(exc, "x", None)
+    if value is None:
+        match = re.search(r"wait of (\d+) seconds", str(exc))
+        value = int(match.group(1)) if match else 60
+    return max(1, int(value))
+
+async def start_client_safely(client, label):
+    """Start Pyrogram without crashing Railway on Telegram FLOOD_WAIT.
+
+    Telegram may rate-limit bot authorization after repeated deploys/restarts.
+    Crashing makes Railway restart and makes the loop worse, so we sleep inside
+    the same container until Telegram allows authorization again.
+    """
+    while True:
+        try:
+            await client.start()
+            return
+        except errors.FloodWait as e:
+            wait_time = _flood_wait_seconds(e) + 5
+            print(f"{Fore.RED}[{label}] Telegram FLOOD_WAIT: sleeping {wait_time} seconds instead of crashing Railway...{Fore.RESET}")
+            await asyncio.sleep(wait_time)
+        except Exception:
+            print(f"{Fore.RED}[{label}] Startup failed with non-FloodWait error:{Fore.RESET}")
+            print(traceback.format_exc())
+            raise
+
 async def main():
-    await app.start()
+    await start_client_safely(app, "worker")
     scheduler.start()
     print(Fore.YELLOW + "Started...")
-    await idle()
-    scheduler.shutdown(wait=False)
-    await app.stop()
+    try:
+        await idle()
+    finally:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            await app.stop()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     app.run(main())
